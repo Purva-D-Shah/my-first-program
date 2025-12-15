@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import datetime as datetime
+from datetime import datetime
 import io
 import re
 
@@ -11,9 +11,11 @@ st.markdown("Calculates P&L using **'Reason for Credit Entry'** with robust stat
 
 # --- PAYMENT CHECK (KILL SWITCH) ---
 deadline = datetime(2025, 12, 20)
+
 if datetime.now() > deadline:
     st.error("⚠️ License Expired.")
     st.stop()
+
 
 # --- SIDEBAR SETTINGS ---
 with st.sidebar:
@@ -232,5 +234,6 @@ if st.button("Calculate Profit & Loss"):
 
             except Exception as e:
                 st.error(f"Error: {e}")
+
 
 
