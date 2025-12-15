@@ -5,7 +5,7 @@ import io
 
 # --- PAYMENT CHECK ---
 # Set the deadline date (Year, Month, Day)
-deadline = datetime(2025, 12, 30) 
+deadline = datetime(2025, 12, 20) 
 
 if datetime.now() > deadline:
     st.error("⚠️ This tool's license has expired. Please contact the developer to renew access.")
@@ -190,6 +190,3 @@ if st.button("Calculate Profit"):
                 st.error(f"Critical Error: {e}")
 
                 st.write("Tip: Check if your CSV file is open in Excel. Close it and try again.")
-
-
-
