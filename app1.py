@@ -5,7 +5,7 @@ from io import BytesIO
 
 # --- Configuration ---
 st.set_page_config(
-    page_title="Order Data Processor (Final Integrated)",
+    page_title="Meesho Data Processor (Profit/Loss Calculator)",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -305,3 +305,4 @@ if orders_file and same_month_file and next_month_file and cost_file:
                 st.error("Report generation failed due to a file processing error.")
 else:
     st.warning("Please upload all four files above to enable processing.")
+
