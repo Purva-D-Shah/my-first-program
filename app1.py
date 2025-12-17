@@ -13,7 +13,8 @@ st.set_page_config(
 def process_data(orders_file, same_month_file, next_month_file, cost_file, packaging_cost_value, misc_cost_value):
     """
     Reads files, processes logic, adds packaging cost, 
-    calculates Ads Cost sums, calculates PROFIT, creates summary sheet, and returns Excel & stats.
+    calculates Ads Cost sums, calculates PROFIT, 
+    creates summary sheet, and returns Excel & stats.
     """
     # 1. Read the input files
     try:
@@ -144,7 +145,6 @@ def process_data(orders_file, same_month_file, next_month_file, cost_file, packa
 
     # --- CALCULATE PROFIT ---
     # Formula: Total Payments - Actual Cost - Packaging Cost - ABS(Same Month Ads Cost)
-    # Note: We take ABS() of ads cost to ensure we subtract the positive magnitude even if input is negative
     profit_loss_value = total_payment_sum - total_actual_cost_sum - total_packaging_sum - abs(same_ads_sum)
 
     # Dictionary for easy access and return
@@ -156,7 +156,7 @@ def process_data(orders_file, same_month_file, next_month_file, cost_file, packa
         "Same Month Ads Cost": same_ads_sum,
         "Next Month Ads Cost": next_ads_sum,
         "Miscellaneous Cost": misc_cost_value,
-        "Profit / Loss": profit_loss_value  # Added Profit
+        "Profit / Loss": profit_loss_value
     }
 
     # --- Write to Excel ---
@@ -218,61 +218,90 @@ def process_data(orders_file, same_month_file, next_month_file, cost_file, packa
 # --- Streamlit App Interface ---
 
 st.title("📊 Dashboard Data Processor")
-st.markdown("Upload the required files to generate a consolidated and processed Excel report.")
 
-with st.sidebar:
-    st.header("Upload Files")
-    orders_file = st.file_uploader("1. Upload `orders.csv`", type=['csv'])
-    same_month_file = st.file_uploader("2. Upload `same.xlsx` (Contains 'Order Payments' & 'Ads Cost')", type=['xlsx'])
-    next_month_file = st.file_uploader("3. Upload `next.xlsx` (Contains 'Order Payments' & 'Ads Cost')", type=['xlsx'])
-    cost_file = st.file_uploader("4. Upload `cost` file", type=['csv', 'xlsx'])
-    
-    st.markdown("---")
-    st.header("Settings")
+# --- PLACEHOLDER for Results (Top of Page) ---
+results_container = st.container()
+
+# --- Input Section ---
+st.markdown("### 1. Upload & Settings")
+st.info("Upload the required files here.")
+
+# Create two columns for file uploads
+col_left, col_right = st.columns(2)
+
+# --- LEFT COLUMN: Orders & Cost ---
+with col_left:
+    st.markdown("**Orders & Cost Data**")
+    orders_file = st.file_uploader("1. Upload orders file `orders.csv`", type=['csv'])
+    cost_file = st.file_uploader("2. Upload `cost` file", type=['csv', 'xlsx'])
+
+# --- RIGHT COLUMN: Same Month & Next Month ---
+with col_right:
+    st.markdown("**Payment & Ads Data**")
+    same_month_file = st.file_uploader("3. Upload same month file `same.xlsx`", type=['xlsx'])
+    next_month_file = st.file_uploader("4. Upload next month file `next.xlsx`", type=['xlsx'])
+
+st.markdown("---")
+
+# Settings in main dashboard
+col_set1, col_set2 = st.columns(2)
+with col_set1:
     pack_cost = st.number_input("Packaging Cost (per record)", value=5.0, step=0.5)
+with col_set2:
     misc_cost = st.number_input("Miscellaneous Cost (e.g., lost product)", value=0.0, step=100.0)
 
+st.markdown("---")
+
+# Processing Logic
 if orders_file and same_month_file and next_month_file and cost_file:
-    st.success("All files uploaded successfully.")
-    
-    if st.button("🚀 Process Data and Generate Report"):
+    # Button is in Main Area
+    if st.button("🚀 Process Data and Generate Report", type="primary"):
         with st.spinner("Processing data..."):
             excel_data, stats = process_data(orders_file, same_month_file, next_month_file, cost_file, pack_cost, misc_cost)
             
             if excel_data and stats:
                 
-                # --- NEW: Display Stats on Dashboard ---
-                st.markdown("### 📈 Financial Summary")
+                # --- VISUALS: Populate Top Container (Above Inputs) ---
+                with results_container:
+                    st.success("✅ Processing Complete! See metrics below and download link in Sidebar.")
+                    st.markdown("### 📈 Financial Summary")
+                    
+                    # Row 1: Key Metric (Profit Only)
+                    pl_val = stats['Profit / Loss']
+                    st.metric("PROFIT / LOSS", f"₹{pl_val:,.2f}", delta=f"{pl_val:,.2f}", delta_color="normal")
+                    
+                    st.divider()
+
+                    # Detailed breakdown
+                    col1, col2, col3, col4 = st.columns(4)
+                    col5, col6, col7 = st.columns(3)
+                    
+                    with col1: st.metric("Total Payments", f"₹{stats['Total Payments']:,.2f}")
+                    with col2: st.metric("Total Cost", f"₹{stats['Total Cost']:,.2f}")
+                    with col3: st.metric("Total Actual Cost", f"₹{stats['Total Actual Cost']:,.2f}")
+                    with col4: st.metric("Packaging Cost", f"₹{stats['Total Packaging Cost']:,.2f}")
+                    
+                    with col5: st.metric("Same Month Ads", f"₹{stats['Same Month Ads Cost']:,.2f}")
+                    with col6: st.metric("Next Month Ads", f"₹{stats['Next Month Ads Cost']:,.2f}")
+                    with col7: st.metric("Misc Cost", f"₹{stats['Miscellaneous Cost']:,.2f}")
+                    
+                    st.divider() # Separator before inputs start
                 
-                # Highlight Profit/Loss at the top
-                pl_val = stats['Profit / Loss']
-                st.metric("PROFIT / LOSS", f"₹{pl_val:,.2f}", delta=f"{pl_val:,.2f}", delta_color="normal")
-                
-                st.markdown("---")
-                
-                # Detailed breakdown
-                col1, col2, col3, col4 = st.columns(4)
-                col5, col6, col7 = st.columns(3)
-                
-                with col1: st.metric("Total Payments", f"₹{stats['Total Payments']:,.2f}")
-                with col2: st.metric("Total Cost", f"₹{stats['Total Cost']:,.2f}")
-                with col3: st.metric("Total Actual Cost", f"₹{stats['Total Actual Cost']:,.2f}")
-                with col4: st.metric("Packaging Cost", f"₹{stats['Total Packaging Cost']:,.2f}")
-                
-                with col5: st.metric("Same Month Ads", f"₹{stats['Same Month Ads Cost']:,.2f}")
-                with col6: st.metric("Next Month Ads", f"₹{stats['Next Month Ads Cost']:,.2f}")
-                with col7: st.metric("Misc Cost", f"₹{stats['Miscellaneous Cost']:,.2f}")
-                
-                st.markdown("---")
-                
-                st.download_button(
-                    label="⬇️ Download Processed Excel File",
-                    data=excel_data,
-                    file_name="Final_Processed_Order_Report.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
                 st.balloons()
+
+                # --- DOWNLOAD: Move to Sidebar ---
+                with st.sidebar:
+                    st.header("Actions")
+                    st.success("✅ Files Processed!")
+                    st.markdown("### 📥 Download")
+                    st.download_button(
+                        label="⬇️ Download Excel Report",
+                        data=excel_data,
+                        file_name="Final_Processed_Order_Report.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
             else:
                 st.error("Report generation failed due to a file processing error.")
 else:
-    st.info("Please upload all four files to enable the processing.")
+    st.warning("Please upload all four files above to enable processing.")
