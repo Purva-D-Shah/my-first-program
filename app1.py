@@ -1,241 +1,278 @@
 import streamlit as st
 import pandas as pd
-import io
-import re
-from datetime import datetime
 import numpy as np
+from io import BytesIO
 
-# --- CRITICAL FIX: Set Fallback Cost to 0.0 when field is removed ---
-fallback_product_cost = 0.0
+# --- Configuration ---
+st.set_page_config(
+    page_title="Order Data Processor (Final Integrated)",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Meesho P&L Reconciliation", layout="wide")
-st.title("💰 Meesho P&L Reconciliation Tool (Final)")
-st.markdown("Builds the P&L report using the Order Detail Report as the master template.")
-
-# --- HELPER FUNCTIONS ---
-def clean_currency(x):
-    """Converts string currency (with commas/non-numeric) to float."""
+def process_data(orders_file, same_month_file, next_month_file, cost_file, packaging_cost_value, misc_cost_value):
+    """
+    Reads files, processes logic, adds packaging cost, 
+    calculates Ads Cost sums, calculates PROFIT, creates summary sheet, and returns Excel & stats.
+    """
+    # 1. Read the input files
     try:
-        if pd.isna(x): return 0.0
-        return float(str(x).replace(',', '').strip())
-    except: return 0.0
+        # --- A. Read Orders ---
+        df_orders = pd.read_csv(orders_file)
 
-def normalize_status(status):
-    """Removes non-alphanumeric chars for robust status matching."""
-    if not isinstance(status, str): return "UNKNOWN"
-    return re.sub(r'[^a-zA-Z0-9]', '', status).upper()
-
-def find_column(df, keywords):
-    """Finds the original column name based on normalized keywords."""
-    for col in df.columns:
-        c_clean = col.lower().replace(" ", "").replace("_", "").replace(".", "").replace('"', '')
-        if any(k in c_clean for k in keywords):
-            return col
-    return None
-
-def read_excel_safely(file):
-    """Attempts to read Excel sheets robustly, handling header and formula rows."""
-    try:
-        xls = pd.ExcelFile(file)
-        data_frames = {}
-        for sheet in xls.sheet_names:
-            df = pd.read_excel(xls, sheet_name=sheet, header=0)
-            
-            if len(df) > 1 and 'Order Date' in str(df.iloc[0, 1]): 
-                df = pd.read_excel(xls, sheet_name=sheet, header=1)
-                df = df.iloc[1:] # Drop the formula row
-            
-            df.columns = [c.lower().replace(" ", "").replace("_", "") for c in df.columns]
-            data_frames[sheet] = df
-        return data_frames
-    except: return {}
-
-# --- SIDEBAR SETTINGS ---
-with st.sidebar:
-    st.header("⚙️ Cost Settings")
-    
-    st.subheader("1. Cost Sheet (SKU Mapping)")
-    uploaded_cost_sheet = st.file_uploader("Upload Cost Sheet (CSV/Excel)", type=['csv', 'xlsx'], help="Must have 'SKU' and 'Cost' columns.")
-    
-    st.write("---")
-    st.subheader("2. Fallback Values")
-    st.info(f"Fallback Product Cost is set to ₹{fallback_product_cost:.2f} (Hardcoded).")
-    packaging_cost = st.number_input("Packaging Cost (₹)", value=5.0, step=1.0, help="Packaging cost per order.")
-
-# --- MAIN APP ---
-with st.expander("📂 Upload Files", expanded=True):
-    col1, col2 = st.columns(2)
-    with col1:
-        uploaded_order = st.file_uploader("1. Order Detail Report (Master List)", type=['csv', 'xlsx'])
-    with col2:
-        st.info("Upload payments in chronological order.")
-        uploaded_payment_1 = st.file_uploader("2. Payment File 1 (Same Month Pay / Ads Source)", type=['xlsx'])
-        uploaded_payment_2 = st.file_uploader("3. Payment File 2 (Next Month Pay)", type=['xlsx'])
+        # --- B. Read Order Payments (Sheet 1) ---
+        excel_cols = ["Sub Order No", "Live Order Status", "Final Settlement Amount"]
         
-        uploaded_payments = [f for f in [uploaded_payment_1, uploaded_payment_2] if f is not None]
+        df_same = pd.read_excel(
+            same_month_file,
+            sheet_name='Order Payments',
+            header=1, 
+            usecols='A,F,L' 
+        )
+        df_next = pd.read_excel(
+            next_month_file,
+            sheet_name='Order Payments',
+            header=1,
+            usecols='A,F,L'
+        )
+
+        # --- C. Read Cost File ---
+        if cost_file.name.endswith('.csv'):
+            df_cost = pd.read_csv(cost_file)
+        else:
+            df_cost = pd.read_excel(cost_file)
+
+        # --- D. Read Ads Cost (Sheet 3) ---
+        same_month_file.seek(0)
+        next_month_file.seek(0)
+
+        try:
+            df_same_ads = pd.read_excel(same_month_file, sheet_name='Ads Cost', usecols="H")
+            same_ads_sum = pd.to_numeric(df_same_ads.iloc[:, 0], errors='coerce').sum()
+        except Exception:
+            same_ads_sum = 0
+            
+        try:
+            df_next_ads = pd.read_excel(next_month_file, sheet_name='Ads Cost', usecols="H")
+            next_ads_sum = pd.to_numeric(df_next_ads.iloc[:, 0], errors='coerce').sum()
+        except Exception:
+            next_ads_sum = 0
+
+    except Exception as e:
+        st.error(f"Error reading one or more files: {e}")
+        return None, None
+
+    # --- Data Processing ---
+    
+    # Standardize column names
+    df_same.columns = excel_cols
+    df_next.columns = excel_cols
+    
+    # Raw data sheets
+    df_orders_raw = df_orders[["Sub Order No", "SKU", "Quantity"]].copy()
+    
+    # Ensure Quantity is numeric
+    df_orders_raw['Quantity'] = pd.to_numeric(df_orders_raw['Quantity'], errors='coerce').fillna(0)
+
+    df_same_sheet = df_same[excel_cols].copy()
+    df_next_sheet = df_next[excel_cols].copy()
+    
+    # Create concatenated status data
+    df_order_status = pd.concat([df_same_sheet, df_next_sheet], ignore_index=True)
+    
+    # Prepare Pivot Data
+    def prepare_for_pivot(df):
+        df['Final Settlement Amount'] = pd.to_numeric(
+            df['Final Settlement Amount'], 
+            errors='coerce' 
+        ).fillna(0)
+        return df
+        
+    df_same_pivot_data = prepare_for_pivot(df_same_sheet.copy())
+    df_next_pivot_data = prepare_for_pivot(df_next_sheet.copy())
+
+    # --- Pivot Tables ---
+    df_pivot_same = pd.pivot_table(df_same_pivot_data, values='Final Settlement Amount', index=['Sub Order No'], aggfunc='sum').reset_index()
+    df_pivot_same.rename(columns={'Final Settlement Amount': 'same month pay'}, inplace=True)
+    
+    df_pivot_next = pd.pivot_table(df_next_pivot_data, values='Final Settlement Amount', index=['Sub Order No'], aggfunc='sum').reset_index()
+    df_pivot_next.rename(columns={'Final Settlement Amount': 'next month pay'}, inplace=True)
 
 
-if st.button("Generate Reconciliation Sheet"):
-    if not uploaded_order or len(uploaded_payments) < 1:
-        st.error("⚠️ Please upload the Order Detail Report and at least Payment File 1.")
-    else:
-        with st.spinner('Processing and reconciling data...'):
-            try:
-                # ==========================================
-                # 1. PROCESS COST SHEET
-                # ==========================================
-                cost_map = {}
-                if uploaded_cost_sheet:
-                    try:
-                        if uploaded_cost_sheet.name.endswith('.csv'): c_df = pd.read_csv(uploaded_cost_sheet)
-                        else: c_df = pd.read_excel(uploaded_cost_sheet)
-                        c_df.columns = c_df.columns.astype(str).str.lower().str.strip()
-                        sku_col = next((c for c in c_df.columns if 'sku' in c or 'style' in c), None)
-                        cost_col = next((c for c in c_df.columns if 'cost' in c or 'price' in c), None)
-                        if sku_col and cost_col:
-                            c_df[sku_col] = c_df[sku_col].astype(str).str.strip().str.lower()
-                            c_df[cost_col] = c_df[cost_col].apply(clean_currency)
-                            cost_map = pd.Series(c_df[cost_col].values, index=c_df[sku_col]).to_dict()
-                    except: pass
+    # --- Merging Data ---
+    df_orders_final = df_orders_raw.copy()
+    
+    # Merge Payment Data
+    df_orders_final = pd.merge(df_orders_final, df_pivot_same[['Sub Order No', 'same month pay']], on='Sub Order No', how='left')
+    df_orders_final = pd.merge(df_orders_final, df_pivot_next[['Sub Order No', 'next month pay']], on='Sub Order No', how='left')
+    
+    # Calculate 'total' pay
+    df_orders_final['total'] = df_orders_final[['same month pay', 'next month pay']].sum(axis=1, skipna=True)
+    
+    # Merge 'status'
+    status_lookup = df_order_status[['Sub Order No', 'Live Order Status']].drop_duplicates(subset=['Sub Order No'], keep='first')
+    df_orders_final = pd.merge(df_orders_final, status_lookup, on='Sub Order No', how='left')
+    df_orders_final.rename(columns={'Live Order Status': 'status'}, inplace=True)
 
-                # ==========================================
-                # 2. PROCESS ORDER REPORT (MASTER TEMPLATE)
-                # ==========================================
-                if uploaded_order.name.endswith('.csv'): orders_df = pd.read_csv(uploaded_order, encoding='latin1')
-                else: orders_df = pd.read_excel(uploaded_order)
+    # --- COST LOGIC ---
+    cost_lookup = df_cost.iloc[:, :2].copy()
+    cost_lookup.columns = ['SKU_Lookup', 'Cost_Value'] 
+
+    df_orders_final['SKU'] = df_orders_final['SKU'].astype(str)
+    cost_lookup['SKU_Lookup'] = cost_lookup['SKU_Lookup'].astype(str)
+
+    df_orders_final = pd.merge(df_orders_final, cost_lookup, left_on='SKU', right_on='SKU_Lookup', how='left')
+
+    condition = df_orders_final['status'].str.strip().isin(['Delivered', 'Exchanged'])
+    df_orders_final['cost'] = np.where(condition, df_orders_final['Cost_Value'], 0)
+    df_orders_final['cost'] = df_orders_final['cost'].fillna(0)
+
+    # Calculate 'actual cost'
+    df_orders_final['actual cost'] = df_orders_final['cost'] * df_orders_final['Quantity']
+    
+    # --- PACKAGING COST ---
+    df_orders_final['packaging cost'] = packaging_cost_value
+
+    # Clean up temp cols
+    df_orders_final.drop(columns=['SKU_Lookup', 'Cost_Value'], inplace=True)
+
+    # --- Calculate Final Stats ---
+    total_payment_sum = df_orders_final['total'].sum(skipna=True)
+    total_cost_sum = df_orders_final['cost'].sum(skipna=True)
+    total_actual_cost_sum = df_orders_final['actual cost'].sum(skipna=True)
+    total_packaging_sum = df_orders_final['packaging cost'].sum(skipna=True)
+
+    # --- CALCULATE PROFIT ---
+    # Formula: Total Payments - Actual Cost - Packaging Cost - ABS(Same Month Ads Cost)
+    # Note: We take ABS() of ads cost to ensure we subtract the positive magnitude even if input is negative
+    profit_loss_value = total_payment_sum - total_actual_cost_sum - total_packaging_sum - abs(same_ads_sum)
+
+    # Dictionary for easy access and return
+    stats = {
+        "Total Payments": total_payment_sum,
+        "Total Cost": total_cost_sum,
+        "Total Actual Cost": total_actual_cost_sum,
+        "Total Packaging Cost": total_packaging_sum,
+        "Same Month Ads Cost": same_ads_sum,
+        "Next Month Ads Cost": next_ads_sum,
+        "Miscellaneous Cost": misc_cost_value,
+        "Profit / Loss": profit_loss_value  # Added Profit
+    }
+
+    # --- Write to Excel ---
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        
+        # --- Sheet 1: orders.csv ---
+        df_orders_final.to_excel(writer, sheet_name='orders.csv', index=False)
+        
+        workbook = writer.book
+        worksheet_orders = writer.sheets['orders.csv']
+        summary_format = workbook.add_format({'bold': True, 'border': 1, 'bg_color': '#DDEBF7'})
+        label_format = workbook.add_format({'bold': True})
+        
+        data_end_row = len(df_orders_final) + 1
+        
+        # Column Indices
+        col_total = df_orders_final.columns.get_loc('total')
+        col_cost = df_orders_final.columns.get_loc('cost')
+        col_actual_cost = df_orders_final.columns.get_loc('actual cost')
+        col_pack_cost = df_orders_final.columns.get_loc('packaging cost')
+        
+        # Write "GRAND TOTALS"
+        worksheet_orders.write(data_end_row, col_total - 1, 'GRAND TOTALS', summary_format)
+        worksheet_orders.write(data_end_row, col_total, total_payment_sum, summary_format)
+        worksheet_orders.write(data_end_row, col_cost, total_cost_sum, summary_format)
+        worksheet_orders.write(data_end_row, col_actual_cost, total_actual_cost_sum, summary_format)
+        worksheet_orders.write(data_end_row, col_pack_cost, total_packaging_sum, summary_format)
+        
+        # Write Ads Cost
+        worksheet_orders.write(data_end_row + 2, 0, 'Same Month Ads Cost', label_format)
+        worksheet_orders.write(data_end_row + 2, 1, same_ads_sum)
+        worksheet_orders.write(data_end_row + 3, 0, 'Next Month Ads Cost', label_format)
+        worksheet_orders.write(data_end_row + 3, 1, next_ads_sum)
+
+        
+        # --- Sheet 2 "final sheet" (Summary) ---
+        summary_df = pd.DataFrame(list(stats.items()), columns=['Metric', 'Value'])
+        summary_df.to_excel(writer, sheet_name='final sheet', index=False)
+
+
+        # --- Sheets 3-8 (Rest of Data) ---
+        df_same_sheet.to_excel(writer, sheet_name='same month', index=False)
+        df_next_sheet.to_excel(writer, sheet_name='next month', index=False)
+        
+        df_pivot_same.rename(columns={'same month pay': 'Total Final Settlement Amount (Same Month)'}, inplace=True)
+        df_pivot_next.rename(columns={'next month pay': 'Total Final Settlement Amount (Next Month)'}, inplace=True)
+
+        df_pivot_same.to_excel(writer, sheet_name='final same month', index=False)
+        df_pivot_next.to_excel(writer, sheet_name='final next month', index=False)
+        
+        df_order_status.to_excel(writer, sheet_name='order status', index=False)
+        df_cost.to_excel(writer, sheet_name='cost', index=False)
+
+    output.seek(0)
+    return output, stats
+
+
+# --- Streamlit App Interface ---
+
+st.title("📊 Dashboard Data Processor")
+st.markdown("Upload the required files to generate a consolidated and processed Excel report.")
+
+with st.sidebar:
+    st.header("Upload Files")
+    orders_file = st.file_uploader("1. Upload `orders.csv`", type=['csv'])
+    same_month_file = st.file_uploader("2. Upload `same.xlsx` (Contains 'Order Payments' & 'Ads Cost')", type=['xlsx'])
+    next_month_file = st.file_uploader("3. Upload `next.xlsx` (Contains 'Order Payments' & 'Ads Cost')", type=['xlsx'])
+    cost_file = st.file_uploader("4. Upload `cost` file", type=['csv', 'xlsx'])
+    
+    st.markdown("---")
+    st.header("Settings")
+    pack_cost = st.number_input("Packaging Cost (per record)", value=5.0, step=0.5)
+    misc_cost = st.number_input("Miscellaneous Cost (e.g., lost product)", value=0.0, step=100.0)
+
+if orders_file and same_month_file and next_month_file and cost_file:
+    st.success("All files uploaded successfully.")
+    
+    if st.button("🚀 Process Data and Generate Report"):
+        with st.spinner("Processing data..."):
+            excel_data, stats = process_data(orders_file, same_month_file, next_month_file, cost_file, pack_cost, misc_cost)
+            
+            if excel_data and stats:
                 
-                orders_df.columns = orders_df.columns.astype(str).str.strip() 
+                # --- NEW: Display Stats on Dashboard ---
+                st.markdown("### 📈 Financial Summary")
                 
-                order_id_col = find_column(orders_df, ["suborder", "orderid"])
-                order_sku_col = find_column(orders_df, ["sku", "style"])
-                order_qty_col = find_column(orders_df, ["quantity"])
-                order_status_col = find_column(orders_df, ["reasonforcredit", "orderstatus"])
+                # Highlight Profit/Loss at the top
+                pl_val = stats['Profit / Loss']
+                st.metric("PROFIT / LOSS", f"₹{pl_val:,.2f}", delta=f"{pl_val:,.2f}", delta_color="normal")
                 
-                if not all([order_id_col, order_sku_col, order_qty_col, order_status_col]):
-                    st.error("❌ Critical columns missing in Order Report. Check file structure.")
-                    st.stop()
-
-                orders_df[order_id_col] = orders_df[order_id_col].astype(str).str.strip()
-                orders_df = orders_df.drop_duplicates(subset=[order_id_col])
-
-                reconciliation_df = orders_df.copy()
-                reconciliation_df['Sub Order ID'] = reconciliation_df[order_id_col]
-                reconciliation_df['Raw Status'] = reconciliation_df[order_status_col].astype(str).str.strip()
-                reconciliation_df['Clean Status'] = reconciliation_df['Raw Status'].apply(normalize_status)
-                
-                # ==========================================
-                # 3. PROCESS PAYMENTS & ADS
-                # ==========================================
-                payment_summaries = {}
-                total_ads_cost = 0.0
-
-                for idx, pay_file in enumerate(uploaded_payments):
-                    file_key = f"pay_{idx+1}"
-                    df_sheets = read_excel_safely(pay_file)
-                    
-                    for df in df_sheets.values():
-                        if idx == 0: # File 1 is the Ads Source
-                            ads_col = next((c for c in df.columns if "totaladscost" in c), None)
-                            if ads_col: total_ads_cost += df[ads_col].apply(clean_currency).abs().sum()
-                        
-                        p_id = next((c for c in df.columns if "suborder" in c), None)
-                        p_amt = next((c for c in df.columns if "finalsettlement" in c or "settlementamount" in c), None)
-                        
-                        if p_id and p_amt:
-                            df[p_id] = df[p_id].astype(str).str.strip()
-                            df[p_amt] = df[p_amt].apply(clean_currency)
-                            summary = df.groupby(p_id)[p_amt].sum().reset_index()
-                            payment_summaries[file_key] = summary.rename(columns={p_id: 'Sub Order ID', p_amt: f'Payment_{file_key}'})
-                            break
-                    if idx == 0: st.info(f"Total Ads Cost (from File 1): ₹ {total_ads_cost:,.2f}")
-
-                # ==========================================
-                # 4. FINAL MERGE & CALCULATIONS
-                # ==========================================
-                
-                final_df = pd.merge(reconciliation_df, payment_summaries.get('pay_1', pd.DataFrame({'Sub Order ID':[], 'Payment_pay_1':[]})), on='Sub Order ID', how='left')
-                final_df = pd.merge(final_df, payment_summaries.get('pay_2', pd.DataFrame({'Sub Order ID':[], 'Payment_pay_2':[]})), on='Sub Order ID', how='left')
-                
-                # Fill NaNs for payment columns
-                final_df['Same Month Pay'] = final_df.get('Payment_pay_1', 0.0).fillna(0)
-                final_df['Next Month Pay'] = final_df.get('Payment_pay_2', 0.0).fillna(0)
-                
-                # --- User Requested Columns ---
-                final_df['Total'] = final_df['Same Month Pay'] + final_df['Next Month Pay']
-
-                # SKU Cost Mapping
-                final_df['Cost Price (Unit)'] = final_df[order_sku_col].apply(
-                    lambda sku: cost_map.get(str(sku).strip().lower(), fallback_product_cost)
-                )
-
-                # Final Cost = Quantity * Cost Price
-                def calculate_product_cost(row):
-                    status = row['Clean Status']
-                    apply_prod_cost = status in ['DELIVERED', 'DOORSTEPEXCHANGE', 'LOST']
-                    
-                    if apply_prod_cost:
-                        qty = row[order_qty_col] if pd.notna(row[order_qty_col]) else 1
-                        return row['Cost Price (Unit)'] * qty
-                    return 0.0
-
-                final_df['Final Cost'] = final_df.apply(calculate_product_cost, axis=1)
-
-                # Net Cost (Per Order) = Total Payment - Final Cost (Product)
-                final_df['Net Cost'] = final_df['Total'] - final_df['Final Cost']
-
-                # Packaging Cost (Dynamic Default)
-                final_df['Packaging Cost (Per Order)'] = final_df['Clean Status'].apply(
-                    lambda status: packaging_cost if status != 'CANCELLED' else 0.0
-                )
-                
-                # Net Profit (Per Order)
-                final_df['Net Profit'] = final_df['Total'] - final_df['Final Cost'] - final_df['Packaging Cost (Per Order)']
-
-                # ==========================================
-                # 5. SUMMARY CALCULATIONS & DASHBOARD
-                # ==========================================
-                
-                total_payment = final_df['Total'].sum()
-                total_product_cost_sum = final_df['Final Cost'].sum()
-                total_packaging_cost_sum = final_df['Packaging Cost (Per Order)'].sum()
-                
-                final_profit_loss = total_payment - (total_product_cost_sum + total_packaging_cost_sum + total_ads_cost)
-
-                # Dashboard Display
-                st.header("1. P&L Summary")
-                
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Total Payment Received", f"₹ {total_payment:,.0f}")
-                c2.metric("Total P&L", f"₹ {final_profit_loss:,.0f}", delta_color="normal")
-                c3.metric("Total Product Cost", f"₹ {total_product_cost_sum:,.0f}")
-                c4.metric("Total Ads Overhead", f"₹ {total_ads_cost:,.0f}")
-
                 st.markdown("---")
-                st.header("2. Detailed Status Counts")
-                status_counts = final_df['Raw Status'].value_counts()
                 
-                cols = st.columns(4)
-                for i, (status, count) in enumerate(status_counts.items()):
-                    with cols[i % 4]: st.metric(label=status, value=count)
+                # Detailed breakdown
+                col1, col2, col3, col4 = st.columns(4)
+                col5, col6, col7 = st.columns(3)
                 
-                # --- Final Output Report Creation ---
-                original_cols = orders_df.columns.tolist()
-                pnl_cols_to_append = ['Same Month Pay', 'Next Month Pay', 'Total', 'Cost Price (Unit)', 'Final Cost', 'Net Cost', 'Packaging Cost (Per Order)', 'Net Profit']
+                with col1: st.metric("Total Payments", f"₹{stats['Total Payments']:,.2f}")
+                with col2: st.metric("Total Cost", f"₹{stats['Total Cost']:,.2f}")
+                with col3: st.metric("Total Actual Cost", f"₹{stats['Total Actual Cost']:,.2f}")
+                with col4: st.metric("Packaging Cost", f"₹{stats['Total Packaging Cost']:,.2f}")
                 
-                df_final_report = final_df[original_cols + pnl_cols_to_append].copy()
-
+                with col5: st.metric("Same Month Ads", f"₹{stats['Same Month Ads Cost']:,.2f}")
+                with col6: st.metric("Next Month Ads", f"₹{stats['Next Month Ads Cost']:,.2f}")
+                with col7: st.metric("Misc Cost", f"₹{stats['Miscellaneous Cost']:,.2f}")
+                
                 st.markdown("---")
-                st.header("3. Final Reconciled Report")
-                st.dataframe(df_final_report)
-
-                # --- Download ---
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    df_final_report.to_excel(writer, sheet_name='Final Reconciled Report', index=False)
-                    
-                st.download_button("📥 Download Final Reconciled Report (Excel)", buffer, "Meesho_Recon_Final.xlsx")
-
-            except Exception as e:
-                st.error(f"A critical error occurred. Please check your file inputs: {e}")
-                st.exception(e)
+                
+                st.download_button(
+                    label="⬇️ Download Processed Excel File",
+                    data=excel_data,
+                    file_name="Final_Processed_Order_Report.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                st.balloons()
+            else:
+                st.error("Report generation failed due to a file processing error.")
+else:
+    st.info("Please upload all four files to enable the processing.")
