@@ -133,7 +133,7 @@ def process_data(orders_file, same_month_file, next_month_file, cost_file, packa
         # --- NEW: Create Packaging Details Sheet ---
         # Filter for specific statuses
         pkg_filter = df_orders_final['status'].str.strip().isin(['Delivered', 'Return', 'Exchange'])
-        df_pkg = df_orders_final[pkg_filter][['Sub Order No', 'SKU', 'status', 'packaging cost']].copy()
+        df_pkg = df_orders_final[pkg_filter][['Sub Order No', 'SKU', 'status', 'actual cost']].copy()
         
         # Calculate total for the footer
         pkg_sum = df_pkg['packaging cost'].sum()
@@ -208,5 +208,6 @@ if orders_file and same_month_file and next_month_file and cost_file:
                     
                     st.download_button("⬇️ Download Excel Report", data=excel_data, file_name="Final_Report.xlsx", use_container_width=True, type="primary")
                 st.balloons()
+
 
 
