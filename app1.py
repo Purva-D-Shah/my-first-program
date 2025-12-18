@@ -130,21 +130,21 @@ def process_data(orders_file, same_month_file, next_month_file, cost_file, packa
         summary_df = pd.DataFrame(list(stats.items()), columns=['Metric', 'Value'])
         summary_df.to_excel(writer, sheet_name='final sheet', index=False)
         
-        # --- NEW: Create Packaging Details Sheet ---
+        # --- NEW: Create total cost Sheet for Delivered, Return & Exchange ---
         # Filter for specific statuses
         pkg_filter = df_orders_final['status'].str.strip().isin(['Delivered', 'Return', 'Exchange'])
         df_pkg = df_orders_final[pkg_filter][['Sub Order No', 'SKU', 'status', 'actual cost']].copy()
         
         # Calculate total for the footer
-        pkg_sum = df_pkg['packaging cost'].sum()
+        pkg_sum = df_pkg['actual cost'].sum()
         
         # Append a total row
-        total_row = pd.DataFrame([['', '', 'packaging cost(Deliver, Return & Exchange)', pkg_sum]], 
-                                 columns=['Sub Order No', 'SKU', 'status', 'packaging cost'])
+        total_row = pd.DataFrame([['', '', 'actual cost(Deliver, Return & Exchange)', pkg_sum]], 
+                                 columns=['Sub Order No', 'SKU', 'status', 'actual cost'])
         df_pkg_final = pd.concat([df_pkg, total_row], ignore_index=True)
         
         # Write the new sheet
-        df_pkg_final.to_excel(writer, sheet_name='Packaging Details', index=False)
+        df_pkg_final.to_excel(writer, sheet_name='Actual cost(Delivered, Return & Exchange)', index=False)
         # --------------------------------------------
 
         df_same_sheet.to_excel(writer, sheet_name='same month', index=False)
@@ -208,6 +208,7 @@ if orders_file and same_month_file and next_month_file and cost_file:
                     
                     st.download_button("⬇️ Download Excel Report", data=excel_data, file_name="Final_Report.xlsx", use_container_width=True, type="primary")
                 st.balloons()
+
 
 
 
