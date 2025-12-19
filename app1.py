@@ -11,6 +11,7 @@ st.set_page_config(
 )
 
 # --- SECURITY: Password Authentication ---
+# --- SECURITY: Password Authentication ---
 def check_password():
     """Returns `True` if the user had a correct password."""
 
@@ -19,24 +20,37 @@ def check_password():
         if st.session_state["username"] in st.secrets["passwords"] and \
            st.session_state["password"] == st.secrets["passwords"][st.session_state["username"]]:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Don't store password
+            # del st.session_state["password"]  # Optional: delete password from state
         else:
             st.session_state["password_correct"] = False
 
+    # Initialize state if it doesn't exist
     if "password_correct" not in st.session_state:
-        # First run, show inputs
-        st.text_input("Username", key="username")
-        st.text_input("Password", type="password", on_change=password_entered, key="password")
-        return False
-    elif not st.session_state["password_correct"]:
-        # Password incorrect, show inputs + error
-        st.text_input("Username", key="username")
-        st.text_input("Password", type="password", on_change=password_entered, key="password")
-        st.error("😕 User not known or password incorrect")
-        return False
-    else:
-        # Password correct
+        st.session_state["password_correct"] = False
+
+    # If already logged in, return True immediately
+    if st.session_state["password_correct"]:
         return True
+
+    # --- Login Form ---
+    st.markdown("### 🔒 Please Login")
+    
+    # We use a form so users can hit "Enter" OR click the button
+    with st.form("credentials_form"):
+        st.text_input("Username", key="username")
+        st.text_input("Password", type="password", key="password")
+        submit_button = st.form_submit_button("Log In", on_click=password_entered)
+
+    # Error handling logic
+    if submit_button:
+        if not st.session_state["password_correct"]:
+            st.error("😕 User not known or password incorrect")
+            return False
+        else:
+            # Force a rerun to remove the login form and show the app
+            st.rerun() 
+            
+    return False
 
 # --- Main Processing Logic (Unchanged) ---
 def process_data(orders_file, same_month_file, next_month_file, cost_file, packaging_cost_value, misc_cost_value):
@@ -241,3 +255,4 @@ if check_password():
                         
                         st.download_button("⬇️ Download Excel Report", data=excel_data, file_name="Final_Report.xlsx", use_container_width=True, type="primary")
                     st.balloons()
+
