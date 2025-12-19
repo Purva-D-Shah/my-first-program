@@ -11,7 +11,6 @@ st.set_page_config(
 )
 
 # --- SECURITY: Password Authentication ---
-# --- SECURITY: Password Authentication ---
 def check_password():
     """Returns `True` if the user had a correct password."""
 
@@ -20,39 +19,32 @@ def check_password():
         if st.session_state["username"] in st.secrets["passwords"] and \
            st.session_state["password"] == st.secrets["passwords"][st.session_state["username"]]:
             st.session_state["password_correct"] = True
-            # del st.session_state["password"]  # Optional: delete password from state
         else:
             st.session_state["password_correct"] = False
 
-    # Initialize state if it doesn't exist
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
 
-    # If already logged in, return True immediately
     if st.session_state["password_correct"]:
         return True
 
-    # --- Login Form ---
     st.markdown("### 🔒 Please Login")
     
-    # We use a form so users can hit "Enter" OR click the button
     with st.form("credentials_form"):
         st.text_input("Username", key="username")
         st.text_input("Password", type="password", key="password")
         submit_button = st.form_submit_button("Log In", on_click=password_entered)
 
-    # Error handling logic
     if submit_button:
         if not st.session_state["password_correct"]:
             st.error("😕 User not known or password incorrect")
             return False
         else:
-            # Force a rerun to remove the login form and show the app
             st.rerun() 
             
     return False
 
-# --- Main Processing Logic (Unchanged) ---
+# --- Main Processing Logic ---
 def process_data(orders_file, same_month_file, next_month_file, cost_file, packaging_cost_value, misc_cost_value):
     try:
         # --- A. Read Orders ---
@@ -72,7 +64,6 @@ def process_data(orders_file, same_month_file, next_month_file, cost_file, packa
             df_cost = pd.read_excel(cost_file)
 
         # --- D. Read Ads Cost ---
-        # Reset file pointers because we are reading the file again for a different sheet
         same_month_file.seek(0)
         next_month_file.seek(0)
 
@@ -135,11 +126,16 @@ def process_data(orders_file, same_month_file, next_month_file, cost_file, packa
     cost_lookup['SKU_Lookup'] = cost_lookup['SKU_Lookup'].astype(str)
     df_orders_final = pd.merge(df_orders_final, cost_lookup, left_on='SKU', right_on='SKU_Lookup', how='left')
 
-    condition = df_orders_final['status'].str.strip().isin(['Delivered', 'Exchange'])
-    df_orders_final['cost'] = np.where(condition, df_orders_final['Cost_Value'], 0)
+    # 1. Product Cost Calculation (Only for Delivered and Exchange)
+    condition_product = df_orders_final['status'].str.strip().isin(['Delivered', 'Exchange'])
+    df_orders_final['cost'] = np.where(condition_product, df_orders_final['Cost_Value'], 0)
     df_orders_final['cost'] = df_orders_final['cost'].fillna(0)
     df_orders_final['actual cost'] = df_orders_final['cost'] * df_orders_final['Quantity']
-    df_orders_final['packaging cost'] = packaging_cost_value
+
+    # 2. Packaging Cost Calculation (UPDATED: Delivered, Exchange & Return only)
+    condition_packaging = df_orders_final['status'].str.strip().isin(['Delivered', 'Exchange', 'Return'])
+    df_orders_final['packaging cost'] = np.where(condition_packaging, packaging_cost_value, 0)
+    
     df_orders_final.drop(columns=['SKU_Lookup', 'Cost_Value'], inplace=True)
 
     # --- Calculate Final Stats ---
@@ -176,7 +172,7 @@ def process_data(orders_file, same_month_file, next_month_file, cost_file, packa
         summary_df.to_excel(writer, sheet_name='final sheet', index=False)
         
         # ---------------------------------------------------------------------
-        # NEW: Create total cost Sheet for Delivered, Return & Exchange
+        # Create total cost Sheet for Delivered, Return & Exchange
         # ---------------------------------------------------------------------
         pkg_filter = df_orders_final['status'].str.strip().isin(['Delivered', 'Return', 'Exchange'])
         df_pkg = df_orders_final[pkg_filter][['Sub Order No', 'SKU', 'status', 'actual cost']].copy()
@@ -255,4 +251,3 @@ if check_password():
                         
                         st.download_button("⬇️ Download Excel Report", data=excel_data, file_name="Final_Report.xlsx", use_container_width=True, type="primary")
                     st.balloons()
-
