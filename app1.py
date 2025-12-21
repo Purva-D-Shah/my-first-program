@@ -81,7 +81,7 @@ def process_data(orders_file, same_month_file, next_month_file, cost_file, packa
 
     except Exception as e:
         st.error(f"Error reading one or more files: {e}")
-        return None, None
+        return None, None, None
 
     # --- Data Processing ---
     df_same.columns = excel_cols
@@ -124,21 +124,36 @@ def process_data(orders_file, same_month_file, next_month_file, cost_file, packa
     cost_lookup.columns = ['SKU_Lookup', 'Cost_Value'] 
     df_orders_final['SKU'] = df_orders_final['SKU'].astype(str)
     cost_lookup['SKU_Lookup'] = cost_lookup['SKU_Lookup'].astype(str)
+    
+    # Merge with Cost Lookup
     df_orders_final = pd.merge(df_orders_final, cost_lookup, left_on='SKU', right_on='SKU_Lookup', how='left')
+
+    # ----------------------------------------------------
+    # NEW LOGIC: Identify Missing SKUs
+    # ----------------------------------------------------
+    # Identify rows where Cost_Value is NaN (meaning SKU wasn't in cost sheet)
+    missing_cost_mask = df_orders_final['Cost_Value'].isna()
+    
+    # Get unique missing SKUs for the Sidebar
+    missing_skus_list = df_orders_final.loc[missing_cost_mask, 'SKU'].unique().tolist()
+    
+    # Fill NaN with 0 temporarily for Calculation (so sums don't crash)
+    df_orders_final['Cost_Value'] = df_orders_final['Cost_Value'].fillna(0)
 
     # 1. Product Cost Calculation (Only for Delivered and Exchange)
     condition_product = df_orders_final['status'].str.strip().isin(['Delivered', 'Exchange'])
+    
+    # Calculate numeric cost
     df_orders_final['cost'] = np.where(condition_product, df_orders_final['Cost_Value'], 0)
-    df_orders_final['cost'] = df_orders_final['cost'].fillna(0)
     df_orders_final['actual cost'] = df_orders_final['cost'] * df_orders_final['Quantity']
 
-    # 2. Packaging Cost Calculation (UPDATED: Delivered, Exchange & Return only)
+    # 2. Packaging Cost Calculation
     condition_packaging = df_orders_final['status'].str.strip().isin(['Delivered', 'Exchange', 'Return'])
     df_orders_final['packaging cost'] = np.where(condition_packaging, packaging_cost_value, 0)
     
     df_orders_final.drop(columns=['SKU_Lookup', 'Cost_Value'], inplace=True)
 
-    # --- Calculate Final Stats ---
+    # --- Calculate Final Stats (Using the numeric values) ---
     total_payment_sum = df_orders_final['total'].sum(skipna=True)
     total_cost_sum = df_orders_final['cost'].sum(skipna=True)
     total_actual_cost_sum = df_orders_final['actual cost'].sum(skipna=True)
@@ -164,6 +179,20 @@ def process_data(orders_file, same_month_file, next_month_file, cost_file, packa
         "count_ready_to_ship": len(df_orders_final[status_series == 'Ready_to_ship'])
     }
 
+    # ----------------------------------------------------
+    # MODIFY FOR EXPORT: Replace 0 with "SKU Not Found"
+    # ----------------------------------------------------
+    # We convert 'cost' and 'actual cost' to object to allow strings
+    df_orders_final['cost'] = df_orders_final['cost'].astype(object)
+    df_orders_final['actual cost'] = df_orders_final['actual cost'].astype(object)
+    
+    # If the row had a missing cost originally (missing_cost_mask) AND it is a status where we expect cost (Delivered/Exchange)
+    # We replace the value with "SKU Not Found"
+    condition_display_error = missing_cost_mask & condition_product
+    
+    df_orders_final.loc[condition_display_error, 'cost'] = "SKU Not Found"
+    df_orders_final.loc[condition_display_error, 'actual cost'] = "SKU Not Found"
+
     # --- Write to Excel ---
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -176,7 +205,10 @@ def process_data(orders_file, same_month_file, next_month_file, cost_file, packa
         # ---------------------------------------------------------------------
         pkg_filter = df_orders_final['status'].str.strip().isin(['Delivered', 'Return', 'Exchange'])
         df_pkg = df_orders_final[pkg_filter][['Sub Order No', 'SKU', 'status', 'actual cost']].copy()
-        pkg_sum = df_pkg['actual cost'].sum()
+        
+        # NOTE: We can't sum "SKU Not Found", so we re-calculate sum based on stats or filter
+        # Only sum numeric values here
+        pkg_sum = pd.to_numeric(df_pkg['actual cost'], errors='coerce').sum()
         
         total_row_data = {
             'Sub Order No': '',
@@ -193,7 +225,7 @@ def process_data(orders_file, same_month_file, next_month_file, cost_file, packa
         df_next_sheet.to_excel(writer, sheet_name='next month', index=False)
 
     output.seek(0)
-    return output, stats
+    return output, stats, missing_skus_list
 
 # --- Streamlit App Interface (GATED) ---
 if check_password():
@@ -218,9 +250,21 @@ if check_password():
     if orders_file and same_month_file and next_month_file and cost_file:
         if st.button("🚀 Process Data and Generate Report", type="primary"):
             with st.spinner("Processing data..."):
-                excel_data, stats = process_data(orders_file, same_month_file, next_month_file, cost_file, pack_cost, misc_cost)
+                excel_data, stats, missing_skus = process_data(orders_file, same_month_file, next_month_file, cost_file, pack_cost, misc_cost)
                 
                 if excel_data and stats:
+                    
+                    # --- NEW SIDEBAR LOGIC FOR MISSING SKUS ---
+                    if missing_skus and len(missing_skus) > 0:
+                        with st.sidebar:
+                            st.warning(f"⚠️ **{len(missing_skus)} SKUs Not Found in Cost Sheet**")
+                            st.error("These items were calculated with 0 cost. Please update your cost sheet.")
+                            missing_df = pd.DataFrame(missing_skus, columns=["Missing SKU Code"])
+                            st.dataframe(missing_df, hide_index=True, use_container_width=True)
+                    else:
+                        with st.sidebar:
+                            st.success("✅ All SKUs found in cost sheet!")
+
                     with results_container:
                         st.success("✅ Processing Complete!")
                         
